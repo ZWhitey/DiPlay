@@ -31,3 +31,8 @@ include(":maphost")
 project(":maphost").projectDir = file("samples/maphost")
 include(":home")
 project(":home").projectDir = file("samples/home")
+// Explicitly opt in to the developer-only decoder device test app.
+if (System.getenv("DIPLAY_DECODER_TEST") == "1") {
+    include(":decodercheck")
+    project(":decodercheck").projectDir = file("samples/decodercheck")
+}

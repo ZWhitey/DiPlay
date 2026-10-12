@@ -9,6 +9,8 @@ import xml.etree.ElementTree as ET
 import signal
 
 root = Path(__file__).resolve().parents[2]
+package_name = os.environ.get('DIPLAY_TEST_PACKAGE', 'com.shihab.diplay.android6fix2')
+decoder_check = os.environ.get('DIPLAY_TEST_KIND') == 'decoder'
 cache = root / 'runtime-cache'
 sdk = cache / 'sdk'
 avd = cache / 'avd'
@@ -37,8 +39,23 @@ env['ANDROID_I_WANT_MY_TCG'] = 'yes'
 env['LD_LIBRARY_PATH'] = '/tmp/diplay-emulator-libs/usr/lib/x86_64-linux-gnu:' + env.get('LD_LIBRARY_PATH', '')
 adb = str(sdk / 'platform-tools/adb')
 result = {'android_api': 23, 'configured_ram_mb': 1024, 'kvm': False, 'boot_completed': False, 'installation': None, 'launch': None, 'fps_verified': False}
+(cache / 'emulator-result.json').write_text(json.dumps(result, indent=2))
+if decoder_check: (cache / 'decoder-result.json').unlink(missing_ok=True)
 def run(*args, timeout=20):
     try:
+        if 'install' in args:
+            process = subprocess.Popen([adb, *args], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            start = time.monotonic()
+            while time.monotonic() - start < timeout:
+                try:
+                    stdout, stderr = process.communicate(timeout=10)
+                    return subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
+                except subprocess.TimeoutExpired:
+                    print('APK installation waiting:', int(time.monotonic()-start), 'seconds', flush=True)
+                    logs = run('-s', 'emulator-5554', 'logcat', '-d', timeout=10)
+                    if logs: (cache / 'install-progress-logcat.txt').write_bytes(logs.stdout)
+            process.kill(); process.communicate()
+            return None
         return subprocess.run([adb, *args], env=env, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return None
@@ -47,7 +64,10 @@ emulator = None
 log = (cache / 'emulator-test.log').open('w')
 try:
     run('start-server')
-    emulator = subprocess.Popen([str(sdk / 'emulator/emulator'), '-avd', avd_name, '-read-only', '-no-window', '-no-audio', '-no-boot-anim', '-no-snapshot', '-no-metrics', '-accel', 'off', '-gpu', 'swiftshader', '-memory', '1024', '-cores', '1', '-port', '5554'], env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    command = [str(sdk / 'emulator/emulator'), '-avd', avd_name, '-read-only', '-no-window', '-no-audio', '-no-boot-anim', '-no-snapshot', '-no-metrics', '-accel', 'off', '-gpu', 'swiftshader', '-memory', '1024', '-cores', '1', '-port', '5554']
+    cpu = os.environ.get('DIPLAY_QEMU_CPU')
+    if cpu: command += ['-qemu', '-cpu', cpu]
+    emulator = subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     start = time.monotonic()
     while time.monotonic() - start < 360:
         if emulator.poll() is not None:
@@ -60,7 +80,7 @@ try:
         print(f'Android 6 boot: {int(time.monotonic()-start)} seconds, not completed', flush=True)
         time.sleep(15)
     if result['boot_completed']:
-        apk = root / 'mobile/build/outputs/apk/debug/mobile-debug.apk'
+        apk = Path(os.environ.get('DIPLAY_TEST_APK', str(root / 'mobile/build/outputs/apk/debug/mobile-debug.apk')))
         start = time.monotonic()
         while not apk.exists() and time.monotonic() - start < 360:
             print('Waiting for current APK build', flush=True)
@@ -74,9 +94,29 @@ try:
             installed = run('-s', 'emulator-5554', 'install', '-r', str(apk), timeout=600)
             result['installation'] = installed.stdout.decode(errors='replace') if installed else 'timeout'
             print('Installation:', result['installation'], flush=True)
-            launched = run('-s', 'emulator-5554', 'shell', 'monkey', '-p', 'com.shihab.diplay.android6fix2', '-c', 'android.intent.category.LAUNCHER', '1', timeout=60)
+            launched = run('-s', 'emulator-5554', 'shell', 'monkey', '-p', package_name, '-c', 'android.intent.category.LAUNCHER', '1', timeout=60)
             result['launch'] = launched.stdout.decode(errors='replace') if launched else 'timeout'
             time.sleep(20)
+            if decoder_check:
+                deadline = time.monotonic() + 180
+                while time.monotonic() < deadline:
+                    completed = run('-s', 'emulator-5554', 'shell', 'run-as', package_name, 'cat', 'files/result.json')
+                    if not completed or completed.returncode != 0 or not completed.stdout.lstrip().startswith(b'{'):
+                        completed = run('-s', 'emulator-5554', 'shell', 'cat', '/data/data/' + package_name + '/files/result.json')
+                    if completed and completed.returncode == 0:
+                        try:
+                            decoded = json.loads(completed.stdout)
+                            result['decoder_check'] = decoded
+                            (cache / 'decoder-result.json').write_text(json.dumps(decoded, indent=2))
+                            print('Decoder result:', json.dumps(decoded), flush=True)
+                            break
+                        except json.JSONDecodeError: pass
+                    crash = run('-s', 'emulator-5554', 'logcat', '-d', '-s', 'libc:F', 'AndroidRuntime:E')
+                    if crash and (b'Fatal signal' in crash.stdout or b'FATAL EXCEPTION' in crash.stdout):
+                        result['decoder_native_or_java_crash'] = True
+                        break
+                    print('Waiting for decoder frame counters', flush=True)
+                    time.sleep(3)
             def click_text(labels):
                 run('-s', 'emulator-5554', 'shell', 'uiautomator', 'dump', '/sdcard/ui.xml', timeout=30)
                 xml = run('-s', 'emulator-5554', 'shell', 'cat', '/sdcard/ui.xml')
@@ -93,11 +133,12 @@ try:
                 except ET.ParseError:
                     pass
                 return False
-            result['skipped_setup'] = click_text({'skip setup', 'skip', '略過設定'})
-            result['settings_button_clicked'] = click_text({'settings', '設定'})
-            alive = run('-s', 'emulator-5554', 'shell', 'pidof', 'com.shihab.diplay.android6fix2')
+            if not decoder_check:
+                result['skipped_setup'] = click_text({'skip setup', 'skip', '略過設定'})
+                result['settings_button_clicked'] = click_text({'settings', '設定'})
+            alive = run('-s', 'emulator-5554', 'shell', 'pidof', package_name)
             result['process_alive'] = bool(alive and alive.returncode == 0 and re.fullmatch(rb'[\d\s]+', alive.stdout.strip()))
-            for name, command in [('logcat.txt', ['logcat', '-d']), ('activities.txt', ['shell', 'dumpsys', 'activity', 'activities']), ('memory.txt', ['shell', 'dumpsys', 'meminfo', 'com.shihab.diplay.android6fix2'])]:
+            for name, command in [('logcat.txt', ['logcat', '-d']), ('activities.txt', ['shell', 'dumpsys', 'activity', 'activities']), ('memory.txt', ['shell', 'dumpsys', 'meminfo', package_name])]:
                 output = run('-s', 'emulator-5554', *command)
                 if output: (cache / name).write_bytes(output.stdout)
             screenshot = run('-s', 'emulator-5554', 'exec-out', 'screencap', '-p')
@@ -110,10 +151,15 @@ finally:
     (cache / 'emulator-result.json').write_text(json.dumps(result, indent=2))
     if emulator and emulator.poll() is None:
         run('-s', 'emulator-5554', 'emu', 'kill')
-        try: os.killpg(emulator.pid, signal.SIGTERM)
-        except ProcessLookupError: pass
         try: emulator.wait(timeout=15)
-        except subprocess.TimeoutExpired: emulator.kill(); emulator.wait()
+        except subprocess.TimeoutExpired:
+            try: os.killpg(emulator.pid, signal.SIGTERM)
+            except ProcessLookupError: pass
+            try: emulator.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                try: os.killpg(emulator.pid, signal.SIGKILL)
+                except ProcessLookupError: pass
+                emulator.wait()
     run('kill-server')
     log.close()
 print(json.dumps(result), flush=True)
