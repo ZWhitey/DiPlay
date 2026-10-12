@@ -139,7 +139,7 @@ class CarPlayBonjour(
     private val config: AirPlayConfig,
     private val identity: AirPlayIdentity,
     private val advertisedHost: String? = null,
-    private val useInterfaceMdns: Boolean = false,
+    private var useInterfaceMdns: Boolean = false,
     private val onEvent: (CarPlayBonjourEvent) -> Unit = {},
     additionalAddresses: List<InetAddress> = emptyList(),
 ) : Closeable {
@@ -169,7 +169,7 @@ class CarPlayBonjour(
         "bonjourAdded=${addedCount.get()} bonjourResolved=${resolvedCount.get()} " +
             "bonjourAddressMismatch=${addressMismatchCount.get()} connectProbes=${probeCount.get()} " +
             "connectProbe2xx=${successfulProbeCount.get()} lastProbe=${lastProbe.get()} " +
-            "mdnsFamilies=$publishedFamilies"
+            "mdnsFamilies=$publishedFamilies bonjourMode=${if (useInterfaceMdns) "interface" else "system"}"
     private val multicastLock = (context.applicationContext ?: context)
         .getSystemService(WifiManager::class.java)
         .createMulticastLock("carplay-bonjour").apply { setReferenceCounted(false) }
@@ -279,6 +279,7 @@ class CarPlayBonjour(
                         "Interface mDNS requires a local advertised address"
                     }
                     // A JmDNS instance joins only its address family's multicast group.
+                    try {
                     for (address in advertisedAddresses) {
                         val dns = JmDNS.create(address, "carplay-${config.deviceId.replace(":", "")}")
                         interfaceMdns.add(dns)
@@ -291,7 +292,15 @@ class CarPlayBonjour(
                     publishedFamilies = advertisedAddresses.joinToString(",") {
                         if (it is Inet4Address) "IPv4" else "IPv6"
                     }
-                } else {
+                    } catch (error: IOException) {
+                        if (generateSequence<Throwable>(error) { it.cause }.none { it is java.net.BindException }) throw error
+                        interfaceMdns.forEach { dns -> runCatching { dns.close() } }
+                        interfaceMdns.clear()
+                        publishedFamilies = "none"
+                        useInterfaceMdns = false
+                    }
+                }
+                if (!useInterfaceMdns) {
                     registerAirPlay()
                     registrationRequested = true
                     nsdManager.discoverServices(

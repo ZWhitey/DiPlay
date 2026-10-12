@@ -15,6 +15,8 @@ import org.bouncycastle.crypto.params.X25519PublicKeyParameters
 import org.bouncycastle.crypto.signers.Ed25519Signer
 import java.nio.ByteBuffer
 import java.security.GeneralSecurityException
+import org.conscrypt.Conscrypt
+import java.security.Provider
 import java.security.SecureRandom
 import javax.crypto.AEADBadTagException
 import javax.crypto.Cipher
@@ -44,11 +46,26 @@ object AirPlayCrypto {
         var implementation: String = cipher.provider.name
     }
 
+    private val bundledProvider: Provider? by lazy {
+        try { Conscrypt.checkAvailability(); Conscrypt.newProvider() }
+        catch (_: LinkageError) { null }
+        catch (_: RuntimeException) { null }
+    }
+
+    internal fun newChachaCipher(): Cipher? =
+        PLATFORM_CHACHA_NAMES.firstNotNullOfOrNull { runCatching { Cipher.getInstance(it) }.getOrNull() }
+            ?: bundledProvider?.let { provider ->
+                PLATFORM_CHACHA_NAMES.firstNotNullOfOrNull {
+                    try { Cipher.getInstance(it, provider) }
+                    catch (_: GeneralSecurityException) { null }
+                    catch (_: LinkageError) { null }
+                }
+            }
+
     // ThreadLocal.withInitial needs API 26.
     private val platformState = object : ThreadLocal<PlatformChacha?>() {
         override fun initialValue(): PlatformChacha? =
-            PLATFORM_CHACHA_NAMES.firstNotNullOfOrNull { runCatching { Cipher.getInstance(it) }.getOrNull() }
-                ?.let(::PlatformChacha)
+            newChachaCipher()?.let(::PlatformChacha)
     }
 
     /** Implementation used by this thread's last successful operation, for diagnostics. */

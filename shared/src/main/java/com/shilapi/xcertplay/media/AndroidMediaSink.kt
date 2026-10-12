@@ -1349,11 +1349,11 @@ private class VideoDecoder(
     }
 
     private fun feed(nalus: ByteArray, receivedNs: Long, presentNs: Long = 0L) {
-        val annexB = MediaCodecSupport.toAnnexB(nalus)
+        val annexBSize = MediaCodecSupport.annexBSize(nalus)
         val config = lastConfig ?: return
         if (outputSurface == null) return
-        if (annexB.isEmpty()) { recover("invalid video access unit"); return }
-        if (!referenceChain.accepts(annexB, config.codec)) {
+        if (annexBSize == 0) { recover("invalid video access unit"); return }
+        if (!referenceChain.accepts(nalus, config.codec)) {
             requestKeyFrameIfDue()
             return
         }
@@ -1372,7 +1372,7 @@ private class VideoDecoder(
             submittedFrameLogged = true
             Log.i(
                 TAG,
-                "video decoder first input avcc=${nalus.size} annexB=${annexB.size}",
+                "video decoder first input avcc=${nalus.size} annexB=${annexBSize}",
             )
         }
         val index = VideoInputPump.acquire(
@@ -1382,8 +1382,8 @@ private class VideoDecoder(
         if (index < 0) { recover("video decoder input stalled"); return }
         val input = checkNotNull(codec.getInputBuffer(index)) { "Decoder input buffer unavailable" }
         input.clear()
-        if (annexB.size <= input.remaining()) {
-            input.put(annexB)
+        if (annexBSize <= input.remaining()) {
+            check(MediaCodecSupport.putAnnexB(nalus, input))
             // A paced frame carries its local time; MediaCodec returns it with the decoded output.
             val presentationUs = if (presentNs > 0) presentNs / 1000 else System.nanoTime() / 1000
             // Recorded before queueing: the output thread may dequeue the frame as soon as it is queued.
@@ -1406,7 +1406,7 @@ private class VideoDecoder(
                 }
                 queuedSlot = (queuedSlot + 1) % queuedPresentationUs.size
             }
-            codec.queueInputBuffer(index, 0, annexB.size, presentationUs, 0)
+            codec.queueInputBuffer(index, 0, annexBSize, presentationUs, 0)
             referenceChain.onQueued()
         } else {
             recover("video frame exceeded codec input capacity")
@@ -1436,8 +1436,10 @@ private class VideoDecoder(
     private fun queuedSlotOf(presentationUs: Long): Int =
         queuedPresentationUs.indices.firstOrNull { queuedPresentationUs[it] == presentationUs } ?: -1
 
+    private val workerOutputInfo = MediaCodec.BufferInfo()
+
     private fun drainOutput(codec: MediaCodec) {
-        val info = MediaCodec.BufferInfo()
+        val info = workerOutputInfo
         while (running) {
             if (!handleOutput(codec, codec.dequeueOutputBuffer(info, 0), info)) return
         }

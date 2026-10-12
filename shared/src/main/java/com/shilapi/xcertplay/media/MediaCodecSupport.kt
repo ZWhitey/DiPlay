@@ -2,6 +2,7 @@ package com.shilapi.xcertplay.media
 
 import com.shilapi.xcertplay.airplay.VideoCodec
 import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
 
 /**
  * Pure byte helpers that convert the CarPlay screen/audio payloads into the
@@ -55,43 +56,57 @@ object MediaCodecSupport {
         return output.toByteArray()
     }
 
-    /** Converts CarPlay's length-prefixed NAL units into an Annex B byte stream. */
-    fun toAnnexB(lengthPrefixed: ByteArray): ByteArray {
-        if (lengthPrefixed.size >= 4 &&
-            lengthPrefixed[0] == 0.toByte() &&
-            lengthPrefixed[1] == 0.toByte() &&
-            lengthPrefixed[2] == 0.toByte() &&
-            lengthPrefixed[3] == 1.toByte()
-        ) {
-            return lengthPrefixed
-        }
+    private fun alreadyAnnexB(bytes: ByteArray): Boolean = bytes.size >= 4 &&
+        bytes[0] == 0.toByte() && bytes[1] == 0.toByte() &&
+        (bytes[2] == 1.toByte() || (bytes[2] == 0.toByte() && bytes[3] == 1.toByte()))
 
-        var inputOffset = 0
-        var outputSize = 0
-        while (inputOffset + 4 <= lengthPrefixed.size) {
-            val length = readU32Be(lengthPrefixed, inputOffset)
-            inputOffset += 4
-            if (length <= 0 || length > lengthPrefixed.size - inputOffset) return ByteArray(0)
-            if (length > Int.MAX_VALUE - outputSize - START_CODE.size) return ByteArray(0)
-            outputSize += START_CODE.size + length
-            inputOffset += length
-        }
-        if (outputSize == 0 || inputOffset != lengthPrefixed.size) return ByteArray(0)
-
-        val output = ByteArray(outputSize)
+    fun annexBSize(bytes: ByteArray): Int {
+        if (alreadyAnnexB(bytes)) return bytes.size
         var offset = 0
-        var outputOffset = 0
-        while (offset + 4 <= lengthPrefixed.size) {
-            val length = readU32Be(lengthPrefixed, offset)
+        while (offset + 4 <= bytes.size) {
+            val length = readU32Be(bytes, offset)
             offset += 4
-            if (length <= 0 || offset + length > lengthPrefixed.size) break
-            START_CODE.copyInto(output, outputOffset)
-            outputOffset += START_CODE.size
-            lengthPrefixed.copyInto(output, outputOffset, offset, offset + length)
-            outputOffset += length
+            if (length <= 0 || length > bytes.size - offset) return 0
             offset += length
         }
-        return output
+        return if (offset == bytes.size) offset else 0
+    }
+
+    /** Validate the entire access unit and capacity before modifying the destination. */
+    fun putAnnexB(bytes: ByteArray, destination: ByteBuffer): Boolean {
+        val size = annexBSize(bytes)
+        if (size == 0 || destination.remaining() < size) return false
+        if (alreadyAnnexB(bytes)) { destination.put(bytes); return true }
+        var offset = 0
+        while (offset < bytes.size) {
+            val length = readU32Be(bytes, offset)
+            destination.put(START_CODE)
+            destination.put(bytes, offset + 4, length)
+            offset += 4 + length
+        }
+        return true
+    }
+
+    fun toAnnexB(bytes: ByteArray): ByteArray {
+        val size = annexBSize(bytes)
+        if (size == 0) return ByteArray(0)
+        if (alreadyAnnexB(bytes)) return bytes
+        return ByteArray(size).also { putAnnexB(bytes, ByteBuffer.wrap(it)) }
+    }
+
+    fun isRandomAccessUnit(bytes: ByteArray, codec: VideoCodec): Boolean {
+        if (annexBSize(bytes) == 0) return false
+        if (alreadyAnnexB(bytes)) return isRandomAccess(bytes, codec)
+        var offset = 0
+        var randomAccess = false
+        while (offset < bytes.size) {
+            val length = readU32Be(bytes, offset)
+            val header = bytes[offset + 4].toInt() and 255
+            if (codec == VideoCodec.H264 && header and 31 == 5) randomAccess = true
+            if (codec == VideoCodec.H265 && length >= 2 && (header shr 1) and 63 in 16..21) randomAccess = true
+            offset += length + 4
+        }
+        return randomAccess
     }
 
     /** IDR (AVC) or IRAP (HEVC) starts an independently decodable reference chain. */
