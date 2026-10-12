@@ -39,3 +39,6 @@ release-signing.properties
 *.key
 *.apk
 *.aab
+
+# Reproducible local SDK and emulator cache
+runtime-cache/

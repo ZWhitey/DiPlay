@@ -1,0 +1,12 @@
+allprojects {
+    tasks.withType(Test).configureEach {
+        doFirst {
+            def mockito = classpath.files.find { it.name.startsWith('mockito-core-') && it.name.endsWith('.jar') }
+            if (mockito != null) jvmArgs("-javaagent:${mockito.absolutePath}")
+            ['http.proxyHost', 'http.proxyPort', 'https.proxyHost', 'https.proxyPort', 'javax.net.ssl.trustStore'].each { key ->
+                def value = System.getProperty(key)
+                if (value != null) systemProperty(key, value)
+            }
+        }
+    }
+}
