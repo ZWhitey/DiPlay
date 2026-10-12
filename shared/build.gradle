@@ -6,7 +6,7 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        minSdk = 25
+        minSdk = 23
         consumerProguardFiles 'ambient-consumer-rules.pro'
         targetSdk = 37
 
@@ -16,7 +16,7 @@ android {
 
         externalNativeBuild {
             ndkBuild {
-                arguments 'APP_PLATFORM=android-25'
+                arguments 'APP_PLATFORM=android-23'
             }
         }
 
@@ -29,11 +29,14 @@ android {
         }
     }
     compileOptions {
+        coreLibraryDesugaringEnabled true
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
 }
 dependencies {
+    api "net.sourceforge.streamsupport:android-retrofuture:1.7.4"
+    coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:2.1.5"
     implementation libs.androidx.app
     implementation libs.bouncycastle
     implementation libs.jmdns

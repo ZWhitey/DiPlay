@@ -152,7 +152,7 @@ class DiPlayActivity : ComponentActivity(), AppAppearanceOwner {
     private val windowLearningPresses = WheelKeyPresses()
     private val endWindowLearning = Runnable { cancelKeyLearning() }
     private var page = "home"
-    internal var ambientSupportCheck: (Context) -> java.util.concurrent.CompletableFuture<Boolean> = AmbientMusicController::checkSupport
+    internal var ambientSupportCheck: (Context) -> java9.util.concurrent.CompletableFuture<Boolean> = AmbientMusicController::checkSupport
     private var settingsCategory = SettingsCategory.OVERVIEW
     private var connectionSettingsReturnCategory: SettingsCategory? = null
     private var setupStep = SetupGuide.STEP_CAR
@@ -720,7 +720,7 @@ class DiPlayActivity : ComponentActivity(), AppAppearanceOwner {
             contentDescription = getString(R.string.carplay)
         }, LinearLayout.LayoutParams(logoSize, logoSize))
         addView(label(getString(R.string.diplay), if (compact) 20 else 26, TEXT, true,
-            centreGlyphs = resources.configuration.locales[0].language != "zh").apply {
+            centreGlyphs = AppLocale.primaryLocale(resources.configuration).language != "zh").apply {
             setPadding(if (compact) dp(8) else dp(12), 0, 0, 0)
         }, LinearLayout.LayoutParams(0, if (compact) dp(44) else dp(52), 1f))
         addView(appearanceButton(), LinearLayout.LayoutParams(dp(if (compact) 44 else 52), dp(if (compact) 44 else 52)).apply {
@@ -968,7 +968,7 @@ class DiPlayActivity : ComponentActivity(), AppAppearanceOwner {
                 importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             }, LinearLayout.LayoutParams(dp(26), dp(26)).apply { marginEnd = dp(12) })
             addView(label(title, 16, if (selected) ACCENT else TEXT, true,
-                centreGlyphs = usesChineseGlyphAlignment(resources.configuration.locales[0].language, title)),
+                centreGlyphs = usesChineseGlyphAlignment(AppLocale.primaryLocale(resources.configuration).language, title)),
                 LinearLayout.LayoutParams(0, -1, 1f))
             setOnClickListener {
                 openSettingsCategory(category)
@@ -1639,7 +1639,7 @@ class DiPlayActivity : ComponentActivity(), AppAppearanceOwner {
                 scheduleControls.visibility = if (nightModes[index] == CarPlayNightMode.SCHEDULE) View.VISIBLE else View.GONE
                 handler.post(::checkForAppearanceChange)
             }
-            val sentenceSeparator = if (resources.configuration.locales[0].language == "zh") "" else " "
+            val sentenceSeparator = if (AppLocale.primaryLocale(resources.configuration).language == "zh") "" else " "
             card.addView(label(getString(R.string.carplay_night_hint) + sentenceSeparator +
                 getString(R.string.carplay_night_time_note), 14, MUTED).apply {
                 setPadding(0, 0, 0, dp(18))
@@ -5044,7 +5044,7 @@ class DiPlayActivity : ComponentActivity(), AppAppearanceOwner {
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }, LinearLayout.LayoutParams(dp(28), dp(28)).apply { marginEnd = dp(12) })
         heading.addView(label(title, 22, TEXT, true,
-            centreGlyphs = icon != null && usesChineseGlyphAlignment(resources.configuration.locales[0].language, title)),
+            centreGlyphs = icon != null && usesChineseGlyphAlignment(AppLocale.primaryLocale(resources.configuration).language, title)),
             LinearLayout.LayoutParams(0, -2, 1f))
         card.addView(heading)
         build(card)
@@ -5239,7 +5239,7 @@ class DiPlayActivity : ComponentActivity(), AppAppearanceOwner {
             paint.getTextBounds(value, 0, value.length, glyphBounds)
             val checkpoint = canvas.save()
             if (layout?.lineCount == 1 && !glyphBounds.isEmpty && baseline >= 0) {
-                val textCentre = if (usesChineseGlyphAlignment(resources.configuration.locales[0].language, value)) {
+                val textCentre = if (usesChineseGlyphAlignment(AppLocale.primaryLocale(resources.configuration).language, value)) {
                     baseline + (glyphBounds.top + glyphBounds.bottom) / 2f
                 } else {
                     val metrics = paint.fontMetrics
@@ -5292,8 +5292,11 @@ class DiPlayActivity : ComponentActivity(), AppAppearanceOwner {
         return dp(if (compact) 44 else 52) * 20f / 56
     }
 
+    private fun buttonCornerRadius(heightPx: Int = 0): Float =
+        if (heightPx > 0) minOf(dp(24).toFloat(), heightPx * 20f / 56) else layoutCornerRadius()
+
     private fun buttonShape(color: Int, stroke: Int, heightPx: Int = 0) = rounded(color, stroke).apply {
-        cornerRadius = if (heightPx > 0) minOf(dp(24).toFloat(), heightPx * 20f / 56) else layoutCornerRadius()
+        cornerRadius = buttonCornerRadius(heightPx)
     }
 
     private fun buttonFocusRing() = focusRing(
@@ -5313,7 +5316,7 @@ class DiPlayActivity : ComponentActivity(), AppAppearanceOwner {
         doOnLayout {
             val shape = buttonShape(if (primary) ACCENT else BUTTON, if (primary) ACCENT else BORDER, height)
             background = android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(RIPPLE), shape, null)
-            foreground = focusRing((shape.cornerRadius / resources.displayMetrics.density).roundToInt())
+            foreground = focusRing((buttonCornerRadius(height) / resources.displayMetrics.density).roundToInt())
         }
     }
 
@@ -5355,7 +5358,7 @@ class DiPlayActivity : ComponentActivity(), AppAppearanceOwner {
         private val glyphBounds = android.graphics.Rect()
 
         fun textAlignmentCentreY(): Float {
-            if (usesChineseGlyphAlignment(resources.configuration.locales[0].language, text)) {
+            if (usesChineseGlyphAlignment(AppLocale.primaryLocale(resources.configuration).language, text)) {
                 val value = text.toString()
                 paint.getTextBounds(value, 0, value.length, glyphBounds)
                 return baseline + (glyphBounds.top + glyphBounds.bottom) / 2f

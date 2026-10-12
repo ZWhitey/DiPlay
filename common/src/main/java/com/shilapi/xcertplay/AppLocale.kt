@@ -13,6 +13,19 @@ import java.util.Locale
 
 /** Platform app locales on Android 13+, with a persisted context override on older Android. */
 object AppLocale {
+    /** Configuration.locales was added in Android 7. */
+    @Suppress("DEPRECATION")
+    fun primaryLocale(configuration: Configuration): Locale =
+        if (Build.VERSION.SDK_INT >= 24) configuration.locales[0] ?: Locale.getDefault()
+        else configuration.locale ?: Locale.getDefault()
+
+    @Suppress("DEPRECATION")
+    internal fun copyLocales(target: Configuration, source: Configuration) {
+        if (Build.VERSION.SDK_INT >= 24) target.setLocales(source.locales)
+        else target.setLocale(primaryLocale(source))
+        target.setLayoutDirection(primaryLocale(source))
+    }
+
     const val SYSTEM = "system"
     const val ENGLISH = "en"
     const val SIMPLIFIED_CHINESE = "zh"
@@ -95,9 +108,9 @@ object AppLocale {
     @Suppress("DEPRECATION")
     fun enforce(context: Context): Boolean {
         if (Build.VERSION.SDK_INT >= 33) return false
-        val locale = locale(preference(context)) ?: Resources.getSystem().configuration.locales[0]
+        val locale = locale(preference(context)) ?: primaryLocale(Resources.getSystem().configuration)
         val resources = context.resources
-        if (resources.configuration.locales[0] == locale) return false
+        if (primaryLocale(resources.configuration) == locale) return false
         val configuration = Configuration(resources.configuration).apply {
             setLocale(locale)
             setLayoutDirection(locale)

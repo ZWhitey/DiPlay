@@ -754,7 +754,14 @@ internal fun videoDecoderAttempts(
     operatingRate: Int,
     softwareDecoder: String?,
     lowLatencyDecoder: String? = null,
-): List<DecoderAttempt> = listOfNotNull(
+    preferredHardwareDecoders: List<String> = emptyList(),
+): List<DecoderAttempt> = preferredHardwareDecoders.distinct().flatMap { name ->
+    listOfNotNull(
+        DecoderAttempt(name, tuned = true, operatingRate = operatingRate).takeIf { operatingRate > 0 },
+        DecoderAttempt(name, tuned = true),
+        DecoderAttempt(name, tuned = false),
+    )
+} + listOfNotNull(
     lowLatencyDecoder?.let { DecoderAttempt(it, tuned = true, operatingRate = operatingRate).takeIf { operatingRate > 0 } },
     lowLatencyDecoder?.let { DecoderAttempt(it, tuned = true) },
     DecoderAttempt(codecName = null, tuned = true, operatingRate = operatingRate).takeIf { operatingRate > 0 },
@@ -1107,7 +1114,9 @@ private class VideoDecoder(
         val requestedLowLatency = if (atOnce && !lowLatencyDecoderRefused) findLowLatencyDecoder(mime) else null
         var next: MediaCodec? = null
         var used: DecoderAttempt? = null
-        for (attempt in videoDecoderAttempts(requestedRate, softwareDecoderName(mime), requestedLowLatency)) {
+        val preferredHardware = legacyMtkH264Decoders(mime)
+        report("hardware decoder candidates=${preferredHardware.joinToString().ifEmpty { "none" }}")
+        for (attempt in videoDecoderAttempts(requestedRate, softwareDecoderName(mime), requestedLowLatency, preferredHardware)) {
             next = tryConfigure(mime, csd, surface, attempt, atOnce)
             if (next != null) { used = attempt; break }
         }
@@ -1228,6 +1237,24 @@ private class VideoDecoder(
     private fun listsPictureOrder(codec: MediaCodec): Boolean =
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
             runCatching { PICTURE_ORDER_PARAMETER in codec.supportedVendorParameters }.getOrDefault(false)
+
+    /** API 23 has no hardware flags: only explicitly recognised vendor codecs are preferred.
+     * Enumeration is advisory; configure/start still validates the actual stream, and failures
+     * continue through the ordinary decoder attempts without disabling video.
+     */
+    private fun legacyMtkH264Decoders(mime: String): List<String> {
+        if (Build.VERSION.SDK_INT > Build.VERSION_CODES.M || mime != MediaFormat.MIMETYPE_VIDEO_AVC) return emptyList()
+        return runCatching {
+            MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
+                .filter { !it.isEncoder && it.supportedTypes.any { type -> type.equals(mime, ignoreCase = true) } }
+                .map { it.name }
+                .filter { it.startsWith("OMX.MTK.", ignoreCase = true) }
+                .distinct()
+        }.getOrElse {
+            report("hardware decoder enumeration failed: ${it.javaClass.simpleName}; using default")
+            emptyList()
+        }
+    }
 
     private fun softwareDecoderName(mime: String): String? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null

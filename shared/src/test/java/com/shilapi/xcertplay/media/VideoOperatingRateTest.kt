@@ -34,6 +34,17 @@ class VideoOperatingRateTest {
         )
     }
 
+    @Test fun vendorHardwareGetsMinimalFallbackBeforePlatformAndSoftware() {
+        val name = "OMX.MTK.VIDEO.DECODER.AVC"
+        val attempts = videoDecoderAttempts(30, "OMX.google.h264.decoder", preferredHardwareDecoders = listOf(name, name))
+        assertEquals(listOf(
+            DecoderAttempt(name, tuned = true, operatingRate = 30),
+            DecoderAttempt(name, tuned = true),
+            DecoderAttempt(name, tuned = false),
+        ), attempts.take(3))
+        assertEquals(videoDecoderAttempts(30, "OMX.google.h264.decoder"), attempts.drop(3))
+    }
+
     @Test fun aRefusedRateIsNotAskedForAgain() {
         assertEquals(60, nextOperatingRate(60, DecoderAttempt(null, tuned = true, operatingRate = 60)))
         assertEquals(0, nextOperatingRate(60, DecoderAttempt(null, tuned = true))) // refused, tuned worked
