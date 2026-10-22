@@ -28,7 +28,7 @@ internal class VideoReferenceChain {
         private set
     fun reset() { needsKeyFrame = true }
     fun accepts(bytes: ByteArray, codec: VideoCodec): Boolean =
-        !needsKeyFrame || MediaCodecSupport.isRandomAccess(bytes, codec)
+        !needsKeyFrame || MediaCodecSupport.isRandomAccessUnit(bytes, codec)
     fun onQueued() { needsKeyFrame = false }
 }
 
@@ -56,8 +56,13 @@ internal class VideoDecodeQueue(
 
     @Synchronized fun offer(job: VideoJob) {
         if (job is VideoJob.Frame) {
-            val frames = jobs.filterIsInstance<VideoJob.Frame>()
-            if (frames.size >= maxFrames || frames.sumOf { it.nalus.size.toLong() } + job.nalus.size > maxBytes) {
+            var frameCount = 0
+            var frameBytes = 0L
+            for (queued in jobs) if (queued is VideoJob.Frame) {
+                frameCount++
+                frameBytes += queued.nalus.size
+            }
+            if (frameCount >= maxFrames || frameBytes + job.nalus.size > maxBytes) {
                 discardFrames()
                 jobs.offer(VideoJob.Resync)
             }

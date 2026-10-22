@@ -34,6 +34,13 @@ class VideoOperatingRateTest {
         )
     }
 
+    @Test fun android6AsksForOneUncompressedFrameOfInputInsteadOf8Mb() {
+        assertEquals(8 * 1024 * 1024, videoMaxInputSize(1024, 600, 24))
+        assertEquals(1024 * 1024, videoMaxInputSize(1024, 600, 23))
+        assertEquals(1920 * 1080 * 3 / 2, videoMaxInputSize(1920, 1080, 23))
+        assertEquals(8 * 1024 * 1024, videoMaxInputSize(3840, 2160, 23))
+    }
+
     @Test fun aRefusedRateIsNotAskedForAgain() {
         assertEquals(60, nextOperatingRate(60, DecoderAttempt(null, tuned = true, operatingRate = 60)))
         assertEquals(0, nextOperatingRate(60, DecoderAttempt(null, tuned = true))) // refused, tuned worked

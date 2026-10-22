@@ -690,7 +690,8 @@ class AndroidMediaSink(
         pacingDelayNanos = if (type == MAIN_SCREEN_TYPE && statsLabel == null) videoPacingDelayMillis * 1_000_000L else 0L,
         operatingRate = videoOperatingRate(type, statsLabel, mainVideoFrameRate),
         vendorLowLatency = vendorLowLatencyDecoder,
-        dedicatedOutputThread = vendorLowLatencyDecoder,
+        // Android 6 head units are too slow to leave a decoded frame waiting for the worker's next poll.
+        dedicatedOutputThread = vendorLowLatencyDecoder || Build.VERSION.SDK_INT <= Build.VERSION_CODES.M,
         framesAtOnce = type == MAIN_SCREEN_TYPE && statsLabel == null && videoPacingDelayMillis > 0,
         // Keep the experimental MTK mode on the main CarPlay picture only. Mirrors and the
         // cluster have separate timing and must retain their established decoder configuration.
@@ -803,6 +804,20 @@ internal data class DecoderAttempt(
     val operatingRate: Int = 0,
     val mtkMode: MtkDecoderMode = MtkDecoderMode.NONE,
 )
+
+/**
+ * Bytes each decoder input buffer may hold. 8 MB fits any frame, but an old OMX decoder reserves that for
+ * every buffer, so on Android 6 the size of one uncompressed frame is asked for, which no coded frame
+ * exceeds.
+ */
+internal fun videoMaxInputSize(width: Int, height: Int, sdkInt: Int): Int {
+    if (sdkInt > Build.VERSION_CODES.M) return MAX_VIDEO_INPUT_SIZE
+    val frame = width.toLong() * height * 3 / 2
+    return frame.coerceIn(MIN_LEGACY_VIDEO_INPUT_SIZE.toLong(), MAX_VIDEO_INPUT_SIZE.toLong()).toInt()
+}
+
+private const val MAX_VIDEO_INPUT_SIZE = 8 * 1024 * 1024
+private const val MIN_LEGACY_VIDEO_INPUT_SIZE = 1024 * 1024
 
 /**
  * Configure attempts in order. Some vendor decoders (e.g. MediaTek c2.mtk.avc.decoder) reject the tuned
@@ -1031,6 +1046,9 @@ private class VideoDecoder(
     }
 
     private fun run() {
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.M) {
+            runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DISPLAY) }
+        }
         try {
             while (running) {
                 val job = queue.poll(5)
@@ -1272,7 +1290,7 @@ private class VideoDecoder(
     ): MediaFormat =
         MediaFormat.createVideoFormat(mime, width, height).apply {
             if (attempt.tuned) {
-                setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, MAX_INPUT_SIZE)
+                setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, videoMaxInputSize(width, height, Build.VERSION.SDK_INT))
                 setInteger(MediaFormat.KEY_PRIORITY, 0)
                 if (attempt.operatingRate > 0) setInteger(MediaFormat.KEY_OPERATING_RATE, attempt.operatingRate)
             }
@@ -1462,11 +1480,11 @@ private class VideoDecoder(
     }
 
     private fun feed(nalus: ByteArray, receivedNs: Long, presentNs: Long = 0L) {
-        val annexB = MediaCodecSupport.toAnnexB(nalus)
+        val annexBSize = MediaCodecSupport.annexBSize(nalus)
         val config = lastConfig ?: return
         if (outputSurface == null) return
-        if (annexB.isEmpty()) { recover("invalid video access unit"); return }
-        if (!referenceChain.accepts(annexB, config.codec)) {
+        if (annexBSize == 0) { recover("invalid video access unit"); return }
+        if (!referenceChain.accepts(nalus, config.codec)) {
             requestKeyFrameIfDue()
             return
         }
@@ -1485,7 +1503,7 @@ private class VideoDecoder(
             submittedFrameLogged = true
             Log.i(
                 TAG,
-                "video decoder first input avcc=${nalus.size} annexB=${annexB.size}",
+                "video decoder first input avcc=${nalus.size} annexB=${annexBSize}",
             )
         }
         val index = DecoderInputPump.acquire(
@@ -1500,8 +1518,8 @@ private class VideoDecoder(
         }
         val input = checkNotNull(codec.getInputBuffer(index)) { "Decoder input buffer unavailable" }
         input.clear()
-        if (annexB.size <= input.remaining()) {
-            input.put(annexB)
+        if (annexBSize <= input.remaining()) {
+            check(MediaCodecSupport.putAnnexB(nalus, input))
             // A paced frame carries its local time; MediaCodec returns it with the decoded output.
             val presentationUs = if (presentNs > 0) presentNs / 1000 else System.nanoTime() / 1000
             // Recorded before queueing: the output thread may dequeue the frame as soon as it is queued.
@@ -1524,7 +1542,7 @@ private class VideoDecoder(
                 }
                 queuedSlot = (queuedSlot + 1) % queuedPresentationUs.size
             }
-            codec.queueInputBuffer(index, 0, annexB.size, presentationUs, 0)
+            codec.queueInputBuffer(index, 0, annexBSize, presentationUs, 0)
             referenceChain.onQueued()
         } else {
             recover("video frame exceeded codec input capacity")
@@ -1554,8 +1572,10 @@ private class VideoDecoder(
     private fun queuedSlotOf(presentationUs: Long): Int =
         queuedPresentationUs.indices.firstOrNull { queuedPresentationUs[it] == presentationUs } ?: -1
 
+    private val workerOutputInfo = MediaCodec.BufferInfo()
+
     private fun drainOutput(codec: MediaCodec) {
-        val info = MediaCodec.BufferInfo()
+        val info = workerOutputInfo
         while (running) {
             if (!handleOutput(codec, codec.dequeueOutputBuffer(info, 0), info)) return
         }
@@ -1692,7 +1712,6 @@ private class VideoDecoder(
 
     private companion object {
         const val TAG = "xcertplay-usb"
-        const val MAX_INPUT_SIZE = 8 * 1024 * 1024
         // The output thread's wait for a decoded frame; a release waits at most this long for it to return.
         const val OUTPUT_TIMEOUT_US = 10_000L
         const val OUTPUT_IDLE_WAIT_MS = 10L

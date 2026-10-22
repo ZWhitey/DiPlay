@@ -712,16 +712,22 @@ object AirPlayPersistence {
     }
 
     /** MediaTek's legacy low-latency/no-reorder decoder path; opt-in and applied at reconnect. */
-    fun loadMtkDecoderTuning(context: Context): Boolean =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_MTK_DECODER_TUNING, false)
+    fun loadMtkDecoderTuning(context: Context): Boolean {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        return if (prefs.contains(KEY_MTK_DECODER_TUNING)) prefs.getBoolean(KEY_MTK_DECODER_TUNING, false)
+            else LowMemoryVideoDefaults.mtkDecoderTuning(context)
+    }
 
     fun saveMtkDecoderTuning(context: Context, enabled: Boolean) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putBoolean(KEY_MTK_DECODER_TUNING, enabled).apply()
     }
 
-    fun loadDirectVideoOutput(context: Context): Boolean =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_DIRECT_VIDEO_OUTPUT, false)
+    fun loadDirectVideoOutput(context: Context): Boolean {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        return if (prefs.contains(KEY_DIRECT_VIDEO_OUTPUT)) prefs.getBoolean(KEY_DIRECT_VIDEO_OUTPUT, false)
+            else LowMemoryVideoDefaults.directOutput(context)
+    }
 
     fun saveDirectVideoOutput(context: Context, enabled: Boolean) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_DIRECT_VIDEO_OUTPUT, enabled).apply()

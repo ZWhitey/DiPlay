@@ -139,7 +139,7 @@ class CarPlayBonjour(
     private val config: AirPlayConfig,
     private val identity: AirPlayIdentity,
     private val advertisedHost: String? = null,
-    private val useInterfaceMdns: Boolean = false,
+    private var useInterfaceMdns: Boolean = false,
     private val onEvent: (CarPlayBonjourEvent) -> Unit = {},
     additionalAddresses: List<InetAddress> = emptyList(),
 ) : Closeable {
@@ -169,7 +169,7 @@ class CarPlayBonjour(
         "bonjourAdded=${addedCount.get()} bonjourResolved=${resolvedCount.get()} " +
             "bonjourAddressMismatch=${addressMismatchCount.get()} connectProbes=${probeCount.get()} " +
             "connectProbe2xx=${successfulProbeCount.get()} lastProbe=${lastProbe.get()} " +
-            "mdnsFamilies=$publishedFamilies"
+            "mdnsFamilies=$publishedFamilies bonjourMode=${if (useInterfaceMdns) "interface" else "system"}"
     private val multicastLock = (context.applicationContext ?: context)
         .getSystemService(WifiManager::class.java)
         .createMulticastLock("carplay-bonjour").apply { setReferenceCounted(false) }
@@ -280,25 +280,34 @@ class CarPlayBonjour(
                     }
                     // A JmDNS instance joins only its address family's multicast group.
                     val hostName = "carplay-${config.deviceId.replace(":", "")}"
-                    for (address in advertisedAddresses) {
-                        // Cache the local name to avoid reverse DNS while preserving the IPv6 scope.
-                        val mdnsAddress = if (address is Inet6Address) {
-                            Inet6Address.getByAddress(hostName, address.address, address.scopeId)
-                        } else {
-                            InetAddress.getByAddress(hostName, address.address)
+                    try {
+                        for (address in advertisedAddresses) {
+                            // Cache the local name to avoid reverse DNS while preserving the IPv6 scope.
+                            val mdnsAddress = if (address is Inet6Address) {
+                                Inet6Address.getByAddress(hostName, address.address, address.scopeId)
+                            } else {
+                                InetAddress.getByAddress(hostName, address.address)
+                            }
+                            val dns = JmDNS.create(mdnsAddress, hostName)
+                            interfaceMdns.add(dns)
+                            dns.addServiceListener("$CARPLAY_CONTROL_SERVICE_TYPE.local.", interfaceListener)
+                            dns.registerService(ServiceInfo.create(
+                                "$AIRPLAY_SERVICE_TYPE.local.", config.deviceName, config.port,
+                                0, 0, CarPlayBonjourProtocol.airPlayTxtRecords(config, identity),
+                            ))
                         }
-                        val dns = JmDNS.create(mdnsAddress, hostName)
-                        interfaceMdns.add(dns)
-                        dns.addServiceListener("$CARPLAY_CONTROL_SERVICE_TYPE.local.", interfaceListener)
-                        dns.registerService(ServiceInfo.create(
-                            "$AIRPLAY_SERVICE_TYPE.local.", config.deviceName, config.port,
-                            0, 0, CarPlayBonjourProtocol.airPlayTxtRecords(config, identity),
-                        ))
+                        publishedFamilies = advertisedAddresses.joinToString(",") {
+                            if (it is Inet4Address) "IPv4" else "IPv6"
+                        }
+                    } catch (error: IOException) {
+                        if (generateSequence<Throwable>(error) { it.cause }.none { it is java.net.BindException }) throw error
+                        interfaceMdns.forEach { dns -> runCatching { dns.close() } }
+                        interfaceMdns.clear()
+                        publishedFamilies = "none"
+                        useInterfaceMdns = false
                     }
-                    publishedFamilies = advertisedAddresses.joinToString(",") {
-                        if (it is Inet4Address) "IPv4" else "IPv6"
-                    }
-                } else {
+                }
+                if (!useInterfaceMdns) {
                     registerAirPlay()
                     registrationRequested = true
                     nsdManager.discoverServices(
