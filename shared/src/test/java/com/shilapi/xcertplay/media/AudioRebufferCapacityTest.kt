@@ -13,7 +13,7 @@ import org.robolectric.annotation.Implementation
 import org.robolectric.annotation.Implements
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [23, 25, 28, 33], manifest = Config.NONE, shadows = [AudioRebufferCapacityTest.CapacityTrack::class])
+@Config(sdk = [25, 28, 33], manifest = Config.NONE, shadows = [AudioRebufferCapacityTest.CapacityTrack::class])
 class AudioRebufferCapacityTest {
     @Test fun residualAudioCountsTowardRestartBeforeAPausedTrackFills() {
         for (millis in MediaAudioBuffer.presets) {
@@ -53,10 +53,38 @@ class AudioRebufferCapacityTest {
         }
     }
 
+    @Test
+    @Config(sdk = [23], manifest = Config.NONE, shadows = [CapacityTrack::class])
+    fun android6DoesNotCallUnavailableUnderrunCounter() {
+        CapacityTrack.underrunReads = 0
+        CapacityTrack.playing = true
+        val track = AudioTrack.Builder().setAudioAttributes(AudioAttributes.Builder().build())
+            .setAudioFormat(android.media.AudioFormat.Builder().setSampleRate(48_000)
+                .setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
+                .setChannelMask(android.media.AudioFormat.CHANNEL_OUT_STEREO).build())
+            .setBufferSizeInBytes(4096).build()
+        val type = Class.forName("com.shilapi.xcertplay.media.AudioRenderer")
+        val renderer = type.declaredConstructors.single { it.parameterCount == 13 }
+            .apply { isAccessible = true }.newInstance(
+                AudioFormat(AudioCodecKind.LPCM, 48_000, 2, 96, "media"), false, false, 0, 0,
+                AudioFocusCoordinator(null, false, false), 0, 80, { _: String -> }, 0L, false, null, false)
+        fun set(name: String, value: Any) = type.getDeclaredField(name).apply { isAccessible = true }.set(renderer, value)
+        try {
+            set("track", track)
+            set("mappedChannel", AudioChannel.MEDIA)
+            set("playbackStarted", true)
+            set("startThresholdBytes", 4096)
+            set("lastPcmWriteNs", System.nanoTime())
+            type.getDeclaredMethod("maintainPlaybackBuffer").apply { isAccessible = true }.invoke(renderer)
+            assertEquals(0, CapacityTrack.underrunReads)
+            assertTrue(CapacityTrack.playing)
+        } finally { track.release() }
+    }
+
     @Implements(AudioTrack::class)
     class CapacityTrack {
         @Implementation fun getPlaybackHeadPosition() = 0
-        @Implementation fun getUnderrunCount() = 1
+        @Implementation fun getUnderrunCount(): Int { underrunReads++; return 1 }
         @Implementation fun pause() { playing = false }
         @Implementation fun play() { playing = true }
         @Implementation fun write(bytes: ByteArray, offset: Int, size: Int, mode: Int): Int {
@@ -72,6 +100,7 @@ class AudioRebufferCapacityTest {
             var queued = 0
             var playing = true
             var blocked = false
+            var underrunReads = 0
         }
     }
 }
