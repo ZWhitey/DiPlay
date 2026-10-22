@@ -2467,7 +2467,7 @@ private class AudioRenderer(
 
     private fun startPlayback(track: AudioTrack) {
         diagnosticStage = "track-play"
-        underrunsAtPlaybackStart = track.underrunCount
+        underrunsAtPlaybackStart = underrunCount(track)
         track.play()
         playbackStarted = true
         reportNavigationPlayback(track)
@@ -2514,7 +2514,7 @@ private class AudioRenderer(
     private fun maintainPlaybackBuffer() {
         val track = track ?: return
         if (bufferProgress.shouldRebuffer(mappedChannel == AudioChannel.MEDIA, playbackStarted,
-                track.underrunCount > underrunsAtPlaybackStart, queue.isEmpty(), track.playbackHeadPosition,
+                underrunCount(track) > underrunsAtPlaybackStart, queue.isEmpty(), track.playbackHeadPosition,
                 startThresholdBytes / 2L)) {
             // The hardware buffer has starved below the recovery floor. Pause without flushing
             // or discarding PCM, then use the configured start threshold again when music resumes.
@@ -2539,12 +2539,17 @@ private class AudioRenderer(
         }
     }
 
+    // AudioTrack.getUnderrunCount() was added in API 24. Android 6 head units
+    // still use the rest of the playback buffer logic, but cannot report this counter.
+    private fun underrunCount(track: AudioTrack): Int =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) track.underrunCount else 0
+
     // Persist counters even during packet starvation, and flush before disconnect releases the track.
     private fun logStatsIfDue(force: Boolean = false) {
         val now = System.nanoTime()
         if (statsWindowStartNs == 0L) statsWindowStartNs = now
         if (!force && now - statsWindowStartNs < STATS_WINDOW_NS) return
-        val underruns = track?.underrunCount ?: 0
+        val underruns = track?.let(::underrunCount) ?: 0
         val lastRx = lastArrivalNs.get()
         val currentTrack = track
         val playbackHeadFrames = currentTrack?.playbackHeadPosition
